@@ -1,74 +1,63 @@
 import ollama
+import mmap
+import numpy as np
 
-# Load the dataset
-
+# --- Load dataset fast ---
 dataset = []
-with open('cat-facts.txt', 'r', encoding='utf-8') as file:
-  dataset = file.readlines()
-  print(f'Loaded {len(dataset)} entries')
+with open('cat-facts.txt', 'rb') as f:
+    with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+        for line in iter(mm.readline, b''):
+            dataset.append(line.rstrip(b'\r\n').decode('utf-8', errors='replace'))
+print(f'Loaded {len(dataset)} entries')
 
-# Implement the retrieval system
-
+# --- Define models ---
 EMBEDDING_MODEL = 'hf.co/CompendiumLabs/bge-base-en-v1.5-gguf'
-LANGUAGE_MODEL = 'hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF'
+LANGUAGE_MODEL  = 'hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF'
 
-# Each element in the VECTOR_DB will be a tuple (chunk, embedding)
-# The embedding is a list of floats, for example: [0.1, 0.04, -0.34, 0.21, ...]
-VECTOR_DB = []
+# --- Batch embed (single call instead of per line) ---
+resp = ollama.embed(model=EMBEDDING_MODEL, input=dataset)
+embeddings = resp['embeddings']  # list of embeddings, one per chunk
+print(f'Generated {len(embeddings)} embeddings')
 
-def add_chunk_to_database(chunk):
-  embedding = ollama.embed(model=EMBEDDING_MODEL, input=chunk)['embeddings'][0]
-  VECTOR_DB.append((chunk, embedding))
-
-for i, chunk in enumerate(dataset):
-  add_chunk_to_database(chunk)
-  print(f'Added chunk {i+1}/{len(dataset)} to the database')
-
-def cosine_similarity(a, b):
-  dot_product = sum([x * y for x, y in zip(a, b)])
-  norm_a = sum([x ** 2 for x in a]) ** 0.5
-  norm_b = sum([x ** 2 for x in b]) ** 0.5
-  return dot_product / (norm_a * norm_b)
+# --- Build NumPy arrays for fast retrieval ---
+vecs  = np.array(embeddings, dtype=np.float32)
+norms = np.linalg.norm(vecs, axis=1)
 
 def retrieve(query, top_n=3):
-  query_embedding = ollama.embed(model=EMBEDDING_MODEL, input=query)['embeddings'][0]
-  # temporary list to store (chunk, similarity) pairs
-  similarities = []
-  for chunk, embedding in VECTOR_DB:
-    similarity = cosine_similarity(query_embedding, embedding)
-    similarities.append((chunk, similarity))
-  # sort by similarity in descending order, because higher similarity means more relevant chunks
-  similarities.sort(key=lambda x: x[1], reverse=True)
-  # finally, return the top N most relevant chunks
-  return similarities[:top_n]
+    q = np.array(ollama.embed(model=EMBEDDING_MODEL, input=query)['embeddings'][0], dtype=np.float32)
+    qn = np.linalg.norm(q)
+    sims = (vecs @ q) / (norms * (qn + 1e-12))
+    top_idx = np.argpartition(-sims, top_n)[:top_n]
+    top_idx = top_idx[np.argsort(-sims[top_idx])]
+    return [(dataset[i], float(sims[i])) for i in top_idx]
 
 
-# Chatbot
+# --- Chatbot loop ---
 while True:
-  print()
-  input_query = input('Ask me a question: ')
-  retrieved_knowledge = retrieve(input_query)
+    print()
+    input_query = input('Ask me a question: ')
+    retrieved_knowledge = retrieve(input_query)
 
-  print('Retrieved knowledge:')
-  for chunk, similarity in retrieved_knowledge:
-    print(f' - (similarity: {similarity:.2f}) {chunk}')
+    print('Retrieved knowledge:')
+    for chunk, similarity in retrieved_knowledge:
+        print(f' - (similarity: {similarity:.2f}) {chunk}')
 
-  instruction_prompt = f'''You are a helpful chatbot.
-  Use only the following pieces of context to answer the question. Don't make up any new information:
-  {'\n'.join([f' - {chunk}' for chunk, similarity in retrieved_knowledge])}
-  '''
-  # print(instruction_prompt)
+    instruction_prompt = (
+        "You are a helpful chatbot.\n"
+        "Use only the following pieces of context to answer the question. "
+        "Don't make up any new information:\n" +
+        "\n".join([f' - {chunk}' for chunk, _ in retrieved_knowledge])
+    )
 
-  stream = ollama.chat(
-    model=LANGUAGE_MODEL,
-    messages=[
-      {'role': 'system', 'content': instruction_prompt},
-      {'role': 'user', 'content': input_query},
-    ],
-    stream=True,
-  )
+    stream = ollama.chat(
+        model=LANGUAGE_MODEL,
+        messages=[
+            {'role': 'system', 'content': instruction_prompt},
+            {'role': 'user',   'content': input_query},
+        ],
+        stream=True,
+    )
 
-  # print the response from the chatbot in real-time
-  print('Chatbot response:')
-  for chunk in stream:
-    print(chunk['message']['content'], end='', flush=True)
+    print('Chatbot response:')
+    for part in stream:
+        print(part['message']['content'], end='', flush=True)
