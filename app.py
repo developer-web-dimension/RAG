@@ -31,7 +31,6 @@ def retrieve(query, top_n=3):
     top_idx = top_idx[np.argsort(-sims[top_idx])]
     return [(dataset[i], float(sims[i])) for i in top_idx]
 
-
 # --- Chatbot loop ---
 while True:
     print()
