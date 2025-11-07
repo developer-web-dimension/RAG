@@ -3,6 +3,7 @@ import re
 import ollama
 import mmap
 import numpy as np
+import faiss
 
 def _clean_text(s: str) -> str:
     # Collapse excessive whitespace, fix soft hyphenations, etc.
@@ -18,7 +19,7 @@ def load_pdf_text(path: str, password: str | None = None) -> list[str]:
     if not p.exists():
         raise FileNotFoundError(path)
 
-    # If encrypted and password provided, PyMuPDF can authenticate directly
+    # If encrypted and password provided, PyMuPDF can authenticate directly 
     doc = fitz.open(p.as_posix())
     if doc.needs_pass:
         if not password:
@@ -76,14 +77,14 @@ def load_text_any(path: str, password: str | None = None) -> list[str]:
 
 
 # --- Load dataset from a file path (PDF/Word/TXT) ---
-SOURCE_PATH = r"assests/JJ x Marvel Games  .docx"  
+SOURCE_PATH = r"assests/DINOv3.pdf"  
 dataset = load_text_any(SOURCE_PATH)  # returns list[str] lines
 print(f"Loaded {len(dataset)} entries from {SOURCE_PATH}")
 
 
 # --- Define models ---
-EMBEDDING_MODEL = 'hf.co/CompendiumLabs/bge-base-en-v1.5-gguf'
-LANGUAGE_MODEL  = 'hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF'
+EMBEDDING_MODEL = 'hf.co/CompendiumLabs/bge-base-en-v1.5-gguf:F32'
+LANGUAGE_MODEL  = 'hf.co/bartowski/Llama-3.2-1B-Instruct-GGUF:F16'
 
 # --- Batch embed (single call instead of per line) ---
 resp = ollama.embed(model=EMBEDDING_MODEL, input=dataset)
@@ -94,13 +95,42 @@ print(f'Generated {len(embeddings)} embeddings')
 vecs  = np.array(embeddings, dtype=np.float32)
 norms = np.linalg.norm(vecs, axis=1)
 
-def retrieve(query, top_n=3):
-    q = np.array(ollama.embed(model=EMBEDDING_MODEL, input=query)['embeddings'][0], dtype=np.float32)
-    qn = np.linalg.norm(q)
-    sims = (vecs @ q) / (norms * (qn + 1e-12))
-    top_idx = np.argpartition(-sims, top_n)[:top_n]
-    top_idx = top_idx[np.argsort(-sims[top_idx])]
-    return [(dataset[i], float(sims[i])) for i in top_idx]
+
+def build_faiss_index(vecs: np.ndarray):
+    """Build and return a normalized FAISS index for cosine similarity."""
+    vecs = vecs.astype('float32')
+    # Normalize vectors (for cosine similarity)
+    faiss.normalize_L2(vecs)
+    
+    d = vecs.shape[1]
+    index = faiss.IndexFlatIP(d)  # IP = Inner Product (cosine similarity after normalization)
+    index.add(vecs)
+    return index
+
+index = build_faiss_index(vecs)
+
+
+
+# def retrieve(query, top_n=3):
+#     q = np.array(ollama.embed(model=EMBEDDING_MODEL, input=query)['embeddings'][0], dtype=np.float32)
+#     qn = np.linalg.norm(q)
+#     sims = (vecs @ q) / (norms * (qn + 1e-12))
+#     top_idx = np.argpartition(-sims, top_n)[:top_n]
+#     top_idx = top_idx[np.argsort(-sims[top_idx])]
+#     return [(dataset[i], float(sims[i])) for i in top_idx]
+
+def retrieve(query: str, top_n: int = 3):
+    """Retrieve top-N most similar entries using FAISS."""
+    # Get query embedding
+    q_emb = np.array(ollama.embed(model=EMBEDDING_MODEL, input=query)['embeddings'][0], dtype=np.float32)
+    q_emb = q_emb.reshape(1, -1)
+    faiss.normalize_L2(q_emb)
+
+    # Search
+    sims, idxs = index.search(q_emb, top_n)
+
+    # Return [(text, score), ...]
+    return [(dataset[i], float(sims[0][j])) for j, i in enumerate(idxs[0])]
 
 # --- Chatbot loop ---
 while True:
