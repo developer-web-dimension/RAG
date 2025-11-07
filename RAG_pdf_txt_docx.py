@@ -78,7 +78,24 @@ def load_text_any(path: str, password: str | None = None) -> list[str]:
 
 # --- Load dataset from a file path (PDF/Word/TXT) ---
 SOURCE_PATH = r"assests/DINOv3.pdf"  
-dataset = load_text_any(SOURCE_PATH)  # returns list[str] lines
+# dataset = load_text_any(SOURCE_PATH) 
+def chunk_lines(lines, max_chars=1000):
+    """Group lines into chunks of roughly `max_chars` characters."""
+    chunks, current = [], ""
+    for line in lines:
+        if len(current) + len(line) < max_chars:
+            current += line + " "
+        else:
+            chunks.append(current.strip())
+            current = line + " "
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
+raw_lines = load_text_any(SOURCE_PATH)
+dataset = chunk_lines(raw_lines, max_chars=1000)
+print(f"Created {len(dataset)} text chunks for embedding.")
+
 print(f"Loaded {len(dataset)} entries from {SOURCE_PATH}")
 
 
@@ -136,18 +153,20 @@ def retrieve(query: str, top_n: int = 3):
 while True:
     print()
     input_query = input('Ask me a question: ')
-    retrieved_knowledge = retrieve(input_query)
+    retrieved_knowledge = retrieve(input_query, top_n=4)
 
     print('Retrieved knowledge:')
     for chunk, similarity in retrieved_knowledge:
         print(f' - (similarity: {similarity:.2f}) {chunk}')
 
     instruction_prompt = (
-        "You are a helpful chatbot.\n"
-        "Use only the following pieces of context to answer the question. "
-        "Don't make up any new information:\n" +
-        "\n".join([f' - {chunk}' for chunk, _ in retrieved_knowledge])
+        "You are a knowledgeable AI assistant.\n"
+        "Use the context below to answer accurately and concisely.\n"
+        "If the context doesn't contain the answer, say 'The provided documents do not contain enough information.'\n\n"
+        "Context:\n" +
+        "\n\n".join([f'### {i+1}. {chunk}' for i, (chunk, _) in enumerate(retrieved_knowledge)])
     )
+
 
     stream = ollama.chat(
         model=LANGUAGE_MODEL,
@@ -158,6 +177,6 @@ while True:
         stream=True,
     )
 
-    print('Chatbot response:')
+    print('Chatbot response:\n\n')
     for part in stream:
         print(part['message']['content'], end='', flush=True)
