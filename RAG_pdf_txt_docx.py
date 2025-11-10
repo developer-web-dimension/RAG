@@ -127,15 +127,6 @@ def build_faiss_index(vecs: np.ndarray):
 index = build_faiss_index(vecs)
 
 
-
-# def retrieve(query, top_n=3):
-#     q = np.array(ollama.embed(model=EMBEDDING_MODEL, input=query)['embeddings'][0], dtype=np.float32)
-#     qn = np.linalg.norm(q)
-#     sims = (vecs @ q) / (norms * (qn + 1e-12))
-#     top_idx = np.argpartition(-sims, top_n)[:top_n]
-#     top_idx = top_idx[np.argsort(-sims[top_idx])]
-#     return [(dataset[i], float(sims[i])) for i in top_idx]
-
 def retrieve(query: str, top_n: int = 3):
     """Retrieve top-N most similar entries using FAISS."""
     # Get query embedding
